@@ -1,0 +1,42 @@
+# ==============================================================
+# Fichier service systemd pour le bridge HTTP -> Modbus LOGO! 8.4
+#
+# INSTALLATION Linux :
+#
+#   1. Copier le script :
+#        sudo mkdir -p /opt/modbus-bridge
+#        sudo cp modbus_bridge.py /opt/modbus-bridge/
+#
+#   2. Copier ce fichier service :
+#        sudo cp modbus-bridge.service /etc/systemd/system/
+#
+#   3. Activer et démarrer :
+#        sudo systemctl daemon-reload
+#        sudo systemctl enable --now modbus-bridge
+#
+#   4. Vérifier :
+#        sudo systemctl status modbus-bridge
+#        journalctl -u modbus-bridge -f
+#
+# ==============================================================
+
+[Unit]
+Description=Bridge HTTP -> Modbus TCP LOGO! 8.4 Siemens
+After=network.target
+
+[Service]
+User=modbus-bridge
+ExecStart=/usr/bin/python3 /opt/modbus-bridge/modbus_bridge.py
+WorkingDirectory=/opt/modbus-bridge
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# ReadWritePaths=/var/log/modbus-bridge
+
+[Install]
+WantedBy=multi-user.target
