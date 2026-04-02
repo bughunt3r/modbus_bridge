@@ -27,17 +27,12 @@ Il a été spécifiquement conçu pour l'intégration Mobotix IP Notify → meme
 ┌──────────────────┬────────────────────────────────────────────────────────────┐
 │ Composant        │ Référence                                                  │
 ├──────────────────┼────────────────────────────────────────────────────────────┤
-│ Microcontrôleur  │ Olimex ESP32-POE-ISO (obligatoire — PoE, LAN8720A)         │
+│ Microcontrôleur  │ Olimex ESP32-POE(-ISO) (obligatoire — PoE, LAN8720A)       │
 │ Automate         │ Siemens LOGO! 8.4 (testé avec firmware ≥ 8.4)              │
 │ Caméra           │ Mobotix avec fonction IP Notify (testé Mx6, Mx7)           │
 │ Alimentation     │ PoE (802.3af) — aucune alimentation externe nécessaire     │
 └──────────────────┴────────────────────────────────────────────────────────────┘
 ```
-
-
-> La carte **Olimex ESP32-POE** (sans ISO) devrait également fonctionner en changeant `ETH_CLK_MODE` de `ETH_CLOCK_GPIO17_OUT` à `ETH_CLOCK_GPIO0_IN` dans le code.
-
----
 
 ## Architecture
 
