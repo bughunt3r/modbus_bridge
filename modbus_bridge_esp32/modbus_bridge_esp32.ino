@@ -15,9 +15,11 @@
  *       checkIP=0|1         activer/désactiver le contrôle des IP sources
  *       clearIP=1           vider la liste des IP autorisées
  *       ip1=x.x.x.x        ajouter une IP autorisée (ip1..ip10)
- *       modbus-ip=x.x.x.x  IP du LOGO! (effet immédiat + NVS)
- *       modbus-port=N       port Modbus du LOGO! (effet immédiat + NVS)
- *       ip=x.x.x.x         IP locale du bridge (NVS + reboot auto)
+ *       modbus-ip=x.x.x.x       IP de l'automate (effet immédiat + NVS)
+ *       modbus-port=N            port Modbus TCP de l'automate (effet immédiat + NVS)
+ *       modbus-coil-base=N       adresse de base coil, décimal ou 0xHEX (effet immédiat + NVS)
+ *       modbus-unit-id=N         Unit ID Modbus [0-255] (effet immédiat + NVS)
+ *       ip=x.x.x.x               IP locale du bridge (NVS + reboot auto)
  *       subnet=x.x.x.x     masque réseau (NVS + reboot auto)
  *       gateway=x.x.x.x    passerelle (NVS + reboot auto)
  *       dhcp=0|1            activer/désactiver DHCP (NVS + reboot auto)
@@ -27,7 +29,8 @@
  *         "http://192.168.129.198:8080/set?checkAuth=1&checkIP=1&clearIP=1&ip1=192.168.129.36"
  *       curl -u admin:adminpass \
  *         "http://192.168.129.198:8080/set?ip=192.168.129.200&gateway=192.168.128.1"
- *     Paramètres immédiats : user, password, checkAuth, checkIP, ip1..ip10, modbus-ip, modbus-port
+ *     Paramètres immédiats : user, password, checkAuth, checkIP, ip1..ip10, modbus-ip, modbus-port,
+ *                            modbus-coil-base, modbus-unit-id
  *     Paramètres avec reboot auto : ip, subnet, gateway, dhcp, port
  *
  *   BUT1 (GPIO34) maintenu au boot → reset NVS aux défauts
@@ -85,22 +88,50 @@
 #define DEFAULT_LOCAL_IP    "192.168.129.198"
 #define DEFAULT_GATEWAY     "192.168.128.1"
 #define DEFAULT_SUBNET      "255.255.254.0"
-#define DEFAULT_MODBUS_IP   "192.168.129.199"
-#define DEFAULT_MODBUS_PORT 510
-#define DEFAULT_LISTEN_PORT 8080
+#define DEFAULT_MODBUS_IP        "192.168.129.199"
+#define DEFAULT_MODBUS_PORT      510     // LOGO! 8.4 uniquement ; port standard Modbus TCP = 502 (tous les autres)
+#define DEFAULT_LISTEN_PORT      8080
+
+// -----------------------------------------------------------------------
+// Table de référence Modbus TCP — ports, adresses coil et Unit ID par automate
+// Modifiable à chaud via /set?modbus-coil-base=N et /set?modbus-unit-id=N
+//
+// Fabricant        Modèle                     Port   CoilBase UnitID  Remarques
+// -----------      -----------------------    -----  -------- ------  ---------
+// Siemens          LOGO! 8.4 (0BA8)           510    0x2040   0x01    Mementos M1..M64 — port non standard !
+// Siemens          S7-1200 / S7-1500          502    0x0000   0x01    Adresses libres via bloc MB_SERVER
+// Schneider        M340, M580                 502    0x0000   0xFF    Sorties %Q — conf. Unity Pro / EcoStruxure
+// Schneider        Modicon M221, M241/M251    502    0x0000   0xFF    Sorties %Q — EcoStruxure Machine Expert
+// Schneider        Zelio Logic SR2/SR3        502    0x0000   0xFF    Sorties Q1..
+// Wago             750-352/362, PFC200        502    0x0000   0x01    Process image sorties physiques
+// Beckhoff         CX/BK + Modbus TCP         502    0x0000   0x01    Dépend du mappage EtherCAT → Modbus
+// Delta            DVP-EH2/SX2/SS2            502    0x0000   0x01    Bobines sorties Y0..
+// Omron            CP1E/CP1L/NX/NJ            502    0x0000   0x01    CIO bits — vérifier mappage area
+// Mitsubishi       iQ-F (FX5U), Q series      502    0x0000   0x01    Bobines Y (sorties) ou relais M
+// Phoenix Contact  AXC F 1152 / 2152          502    0x0000   0x01    Sorties configurables dans PLCnext
+// Moxa             ioLogik E1210/E1212         502    0x0000   0x01    Digital outputs DO0..
+//
+// Note : 0x0000 est l'adresse standard pour la quasi-totalité des automates modernes.
+//        0x2040 est spécifique au LOGO! 8.4 Siemens (port 510 non standard).
+//        UnitID 0xFF (255) = identifiant générique accepté par les automates Schneider/Modicon.
+//        Certains automates permettent de remapper leurs adresses Modbus dans leur outil
+//        de configuration — toujours vérifier la documentation du projet automate.
+// -----------------------------------------------------------------------
+#define DEFAULT_MODBUS_COIL_BASE  0x2040  // LOGO! 8.4 ; mettre 0x0000 pour la plupart des autres
+#define DEFAULT_MODBUS_UNIT_ID    0x01    // LOGO! 8.4 et majorité des automates ; 0xFF pour Schneider/Modicon
 
 // -----------------------------------------------------------------------
 // Valeurs par défaut compilées — utilisées si NVS vide ou reset BUT1
 // -----------------------------------------------------------------------
-static const char*  DEFAULT_USER      = "admin";
-static const char*  DEFAULT_PASSWORD  = "admin";
+static const char*  DEFAULT_USER      = "user";
+static const char*  DEFAULT_PASSWORD  = "pass";
 
 // -----------------------------------------------------------------------
 // Mot de passe admin (fixe, non modifiable via /set) — protège la route /set
-// Utiliser : curl -u admin:adminpass "http://.../set?..."
+// Utiliser : curl -u admin:1234 "http://.../set?..."
 // -----------------------------------------------------------------------
 static const char*  ADMIN_USER        = "admin";
-static const char*  ADMIN_PASSWORD    = "admin";
+static const char*  ADMIN_PASSWORD    = "1234";
 
 // -----------------------------------------------------------------------
 // Configuration runtime — chargée depuis NVS au boot, modifiable via /set
@@ -118,12 +149,9 @@ static IPAddress cfg_subnet;
 static bool      cfg_dhcp       = false;
 static uint16_t  cfg_listenPort = DEFAULT_LISTEN_PORT;
 static IPAddress cfg_modbusIP;
-static uint16_t  cfg_modbusPort = DEFAULT_MODBUS_PORT;
-
-// -----------------------------------------------------------------------
-// Modbus : adresse de base coil M1 = 0x2040, M(n) = 0x2040 + (n-1)
-// -----------------------------------------------------------------------
-static const uint16_t M_BASE_ADDR = 0x2040;
+static uint16_t  cfg_modbusPort     = DEFAULT_MODBUS_PORT;
+static uint16_t  cfg_modbusCoilBase = DEFAULT_MODBUS_COIL_BASE;
+static uint8_t   cfg_modbusUnitId   = DEFAULT_MODBUS_UNIT_ID;
 
 // -----------------------------------------------------------------------
 
@@ -172,13 +200,13 @@ void onEthEvent(arduino_event_id_t event)
 // -----------------------------------------------------------------------
 static void buildModbusFrame(uint8_t buf[12], int memento, bool on)
 {
-    uint16_t addr = M_BASE_ADDR + (uint16_t)(memento - 1);
+    uint16_t addr = cfg_modbusCoilBase + (uint16_t)(memento - 1);
     uint16_t val  = on ? 0xFF00u : 0x0000u;
 
     buf[0]  = 0x00; buf[1]  = 0x01;           // Transaction ID
     buf[2]  = 0x00; buf[3]  = 0x00;           // Protocol ID
     buf[4]  = 0x00; buf[5]  = 0x06;           // Length
-    buf[6]  = 0x01;                            // Unit ID
+    buf[6]  = cfg_modbusUnitId;               // Unit ID
     buf[7]  = 0x05;                            // FC05
     buf[8]  = (addr >> 8) & 0xFF;
     buf[9]  =  addr       & 0xFF;
@@ -344,15 +372,18 @@ static void loadConfig()
     s = prefs.getString("modbusIP", DEFAULT_MODBUS_IP); cfg_modbusIP.fromString(s);
     cfg_dhcp       = prefs.getBool  ("dhcp",       false);
     cfg_listenPort = prefs.getUShort("listenPort", DEFAULT_LISTEN_PORT);
-    cfg_modbusPort = prefs.getUShort("modbusPort", DEFAULT_MODBUS_PORT);
+    cfg_modbusPort     = prefs.getUShort("modbusPort", DEFAULT_MODBUS_PORT);
+    cfg_modbusCoilBase = prefs.getUShort("coilBase",   DEFAULT_MODBUS_COIL_BASE);
+    cfg_modbusUnitId   = prefs.getUChar ("unitId",     DEFAULT_MODBUS_UNIT_ID);
     prefs.end();
     Serial.printf("[NVS] chargé : secCheck=%d secAuth=%d user=%s ipCount=%d\n",
                   cfg_secCheck, cfg_secAuth, cfg_user.c_str(), cfg_ipCount);
     Serial.printf("[NVS] réseau : ip=%s gw=%s mask=%s dhcp=%d port=%u\n",
                   cfg_localIP.toString().c_str(), cfg_gateway.toString().c_str(),
                   cfg_subnet.toString().c_str(), cfg_dhcp, cfg_listenPort);
-    Serial.printf("[NVS] modbus : ip=%s port=%u\n",
-                  cfg_modbusIP.toString().c_str(), cfg_modbusPort);
+    Serial.printf("[NVS] modbus : ip=%s port=%u coilBase=0x%04X unitId=0x%02X\n",
+                  cfg_modbusIP.toString().c_str(), cfg_modbusPort,
+                  cfg_modbusCoilBase, cfg_modbusUnitId);
 }
 
 static void resetToDefaults()
@@ -370,9 +401,11 @@ static void resetToDefaults()
     cfg_gateway.fromString(DEFAULT_GATEWAY);
     cfg_subnet.fromString(DEFAULT_SUBNET);
     cfg_modbusIP.fromString(DEFAULT_MODBUS_IP);
-    cfg_dhcp       = false;
-    cfg_listenPort = DEFAULT_LISTEN_PORT;
-    cfg_modbusPort = DEFAULT_MODBUS_PORT;
+    cfg_dhcp           = false;
+    cfg_listenPort     = DEFAULT_LISTEN_PORT;
+    cfg_modbusPort     = DEFAULT_MODBUS_PORT;
+    cfg_modbusCoilBase = DEFAULT_MODBUS_COIL_BASE;
+    cfg_modbusUnitId   = DEFAULT_MODBUS_UNIT_ID;
     Serial.println("[NVS] Reset aux valeurs par défaut (BUT1)");
     Serial.println("[NVS] secCheck=false secAuth=false — accès libre au redémarrage");
 }
@@ -451,6 +484,27 @@ static void handleSet(NetworkClient& client, const String& query, const String& 
             cfg_modbusPort = (uint16_t)p;
             prefs.putUShort("modbusPort", cfg_modbusPort);
             reply += "modbus-port=" + v + "\n";
+        }
+    }
+    v = getParam(query, "modbus-coil-base");
+    if (v.length() > 0) {
+        uint32_t base = (v.startsWith("0x") || v.startsWith("0X"))
+                        ? (uint32_t)strtoul(v.c_str(), nullptr, 16)
+                        : (uint32_t)v.toInt();
+        if (base <= 0xFFFF) {
+            cfg_modbusCoilBase = (uint16_t)base;
+            prefs.putUShort("coilBase", cfg_modbusCoilBase);
+            char hex[8]; snprintf(hex, sizeof(hex), "0x%04X", cfg_modbusCoilBase);
+            reply += String("modbus-coil-base=") + hex + "\n";
+        }
+    }
+    v = getParam(query, "modbus-unit-id");
+    if (v.length() > 0) {
+        int uid = v.toInt();
+        if (uid >= 0 && uid <= 255) {
+            cfg_modbusUnitId = (uint8_t)uid;
+            prefs.putUChar("unitId", cfg_modbusUnitId);
+            reply += "modbus-unit-id=" + v + "\n";
         }
     }
 
